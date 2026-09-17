@@ -496,3 +496,11 @@ body {
     grid-template-columns: 1fr;
   }
 }
+/* Hide tabs when showing disk view */
+.tabs.hidden { display: none; }
+
+/* Folder icon styling */
+.proc-fallback.proc-folder {
+  background: rgba(251, 191, 36, 0.15);
+  font-size: 1rem;
+}

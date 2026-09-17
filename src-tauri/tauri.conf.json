@@ -13,8 +13,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "/usr/share/icons/**",
-          "/usr/share/pixmaps/**",
+          "/usr/share/**",
           "/usr/local/share/**",
           "/var/lib/flatpak/**",
           "/home/cheester/.local/share/**"

@@ -1,10 +1,14 @@
 const { invoke } = window.__TAURI__.core;
+const { convertFileSrc } = window.__TAURI__.core;
 
 const NAME_KEY = "sw_user_name";
 
 let currentSort = "ram";
+let currentView = "ram";
 let modalRefreshTimer = null;
 let started = false;
+let isLoading = false;
+let refreshing = false;
 
 window.addEventListener("DOMContentLoaded", () => {
   const onboarding  = document.getElementById("onboarding");
@@ -15,6 +19,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const modal       = document.getElementById("modal");
   const modalTitle  = document.getElementById("modal-title");
   const modalKicker = document.getElementById("modal-kicker");
+  const modalTabs   = document.getElementById("modal-tabs");
   const processList = document.getElementById("process-list");
 
   // ---------- SCREENS ----------
@@ -53,10 +58,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (started) return;
     started = true;
     refresh();
-    setInterval(refresh, 2000);
+    setInterval(refresh, 2500);
   }
 
   async function refresh() {
+    if (refreshing) return;
+    refreshing = true;
     try {
       const s = await invoke("get_system_snapshot");
 
@@ -70,10 +77,9 @@ window.addEventListener("DOMContentLoaded", () => {
         `${s.used_ram_gb.toFixed(1)} / ${s.total_ram_gb.toFixed(1)} GB`;
       document.getElementById("ram-bar").style.width = `${s.ram_percent}%`;
 
-      const diskUsedPct = s.disk_used_percent;
       document.getElementById("disk").textContent =
         `${s.disk_used_gb.toFixed(0)} / ${s.disk_total_gb.toFixed(0)} GB`;
-      document.getElementById("disk-bar").style.width = `${diskUsedPct}%`;
+      document.getElementById("disk-bar").style.width = `${s.disk_used_percent}%`;
 
       const cpuHint = document.getElementById("cpu-hint");
       if (cpu > 80) { cpuHint.textContent = "Very busy"; cpuHint.dataset.level = "high"; }
@@ -86,21 +92,23 @@ window.addEventListener("DOMContentLoaded", () => {
       else { ramHint.textContent = "Plenty of space"; ramHint.dataset.level = "low"; }
 
       const diskHint = document.getElementById("disk-hint");
-      if (diskUsedPct > 90) { diskHint.textContent = "Critical"; diskHint.dataset.level = "high"; }
-      else if (diskUsedPct > 75) { diskHint.textContent = "Getting tight"; diskHint.dataset.level = "mid"; }
+      if (s.disk_used_percent > 90) { diskHint.textContent = "Critical"; diskHint.dataset.level = "high"; }
+      else if (s.disk_used_percent > 75) { diskHint.textContent = "Getting tight"; diskHint.dataset.level = "mid"; }
       else { diskHint.textContent = "Comfortable"; diskHint.dataset.level = "low"; }
     } catch (err) {
       console.error("Snapshot error:", err);
+    } finally {
+      refreshing = false;
     }
   }
 
   // ---------- MODAL ----------
   document.getElementById("cpu-card").addEventListener("click", () => openModal("cpu"));
   document.getElementById("ram-card").addEventListener("click", () => openModal("ram"));
+  document.getElementById("disk-card").addEventListener("click", () => openModal("disk"));
 
   document.getElementById("modal-close").addEventListener("click", closeModal);
   modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
-
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
   });
@@ -114,28 +122,45 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  function openModal(sortBy) {
-    currentSort = sortBy;
-    modalKicker.textContent = sortBy === "cpu" ? "CPU hogs" : "Memory hogs";
-    modalTitle.textContent = "Top 8 consumers";
-    document.querySelectorAll(".tab").forEach((t) => {
-      t.classList.toggle("active", t.dataset.sort === sortBy);
-    });
-    modal.classList.remove("hidden");
-    loadProcesses(sortBy);
-
+  function openModal(view) {
+    currentView = view;
     clearInterval(modalRefreshTimer);
-    modalRefreshTimer = setInterval(() => {
-      if (!modal.classList.contains("hidden")) loadProcesses(currentSort);
-    }, 3000);
+
+    if (view === "disk") {
+      modalKicker.textContent = "Disk usage";
+      modalTitle.textContent = "Biggest items in your home";
+      modalTabs.classList.add("hidden");
+      loadDiskUsage();
+    } else {
+      currentSort = view;
+      modalKicker.textContent = view === "cpu" ? "CPU hogs" : "Memory hogs";
+      modalTitle.textContent = "Top 8 consumers";
+      modalTabs.classList.remove("hidden");
+      document.querySelectorAll(".tab").forEach((t) => {
+        t.classList.toggle("active", t.dataset.sort === view);
+      });
+      loadProcesses(view);
+
+      modalRefreshTimer = setInterval(() => {
+        if (!modal.classList.contains("hidden") && currentView !== "disk" && !isLoading) {
+          loadProcesses(currentSort);
+        }
+      }, 5000);
+    }
+
+    modal.classList.remove("hidden");
   }
 
   function closeModal() {
     modal.classList.add("hidden");
     clearInterval(modalRefreshTimer);
+    modalRefreshTimer = null;
   }
 
+  // ---------- PROCESSES ----------
   async function loadProcesses(sortBy) {
+    if (isLoading) return;
+    isLoading = true;
     processList.innerHTML = `<li class="proc-loading">Scanning processes…</li>`;
     try {
       const procs = await invoke("get_top_processes", { sortBy });
@@ -143,6 +168,8 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.error(err);
       processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
+    } finally {
+      isLoading = false;
     }
   }
 
@@ -162,15 +189,12 @@ window.addEventListener("DOMContentLoaded", () => {
           ? Math.min(p.cpu_usage, 100)
           : Math.min((p.ram_mb / 2000) * 100, 100);
 
-        const initial = (p.name[0] || "?").toUpperCase();
-        const hue = (p.name.charCodeAt(0) * 37) % 360;
-
-        const iconHtml = `<div class="proc-fallback" style="background:hsl(${hue},60%,45%)">${initial}</div>`;
+        const icon = iconHtml(p.name, p.icon_path);
 
         return `
           <li class="proc-row">
             <span class="proc-rank">${i + 1}</span>
-            ${iconHtml}
+            ${icon}
             <div class="proc-info">
               <div class="proc-name">${escapeHtml(p.name)}</div>
               <div class="proc-meta">PID ${p.pid}</div>
@@ -185,6 +209,71 @@ window.addEventListener("DOMContentLoaded", () => {
       .join("");
   }
 
+  // ---------- DISK ----------
+  async function loadDiskUsage() {
+    processList.innerHTML = `<li class="proc-loading">Scanning your home folder… may take a few seconds</li>`;
+    try {
+      const items = await invoke("get_disk_usage", { path: null });
+      renderDisk(items);
+    } catch (err) {
+      console.error(err);
+      processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
+    }
+  }
+
+  function renderDisk(items) {
+    if (!items || !items.length) {
+      processList.innerHTML = `<li class="proc-loading">No large items found.</li>`;
+      return;
+    }
+
+    const max = items[0].size_mb || 1;
+
+    processList.innerHTML = items
+      .map((it, i) => {
+        const size = it.size_mb > 1024
+          ? `${(it.size_mb / 1024).toFixed(2)} GB`
+          : `${it.size_mb.toFixed(0)} MB`;
+
+        const barPct = Math.min((it.size_mb / max) * 100, 100);
+        const icon = iconHtml(it.name, null, it.is_dir);
+
+        return `
+          <li class="proc-row">
+            <span class="proc-rank">${i + 1}</span>
+            ${icon}
+            <div class="proc-info">
+              <div class="proc-name">${escapeHtml(it.name)}</div>
+              <div class="proc-meta">${it.is_dir ? "Folder" : "File"}</div>
+            </div>
+            <div class="proc-metric">
+              <span class="proc-value">${size}</span>
+              <div class="proc-bar"><div class="proc-bar-fill" style="width:${barPct}%"></div></div>
+            </div>
+          </li>
+        `;
+      })
+      .join("");
+  }
+
+  // ---------- ICON HELPER ----------
+  function iconHtml(name, iconPath, isDir = false) {
+    const initial = (name[0] || "?").toUpperCase();
+    const hue = (name.charCodeAt(0) * 37) % 360;
+
+    const fallback = isDir
+      ? `<div class="proc-fallback proc-folder">📁</div>`
+      : `<div class="proc-fallback" style="background:hsl(${hue},60%,45%)">${initial}</div>`;
+
+    if (!iconPath) return fallback;
+
+    const src = convertFileSrc(iconPath);
+    // Escape the fallback HTML so it can safely live inside an onerror attribute
+    const esc = fallback.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    return `<img class="proc-icon" src="${src}" alt="" onerror="this.outerHTML='${esc}'" />`;
+  }
+
+  // ---------- UTIL ----------
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])

@@ -65,7 +65,7 @@
       </div>
     </main>
 
-    <!-- PROCESS MODAL -->
+    <!-- MODAL -->
     <div id="modal" class="modal hidden">
       <div class="modal-card">
         <header class="modal-head">
@@ -76,13 +76,14 @@
           <button id="modal-close" class="modal-close">✕</button>
         </header>
 
-        <div class="tabs">
+        <!-- Sort tabs (only for CPU/RAM) -->
+        <div class="tabs" id="modal-tabs">
           <button class="tab active" data-sort="ram">By memory</button>
           <button class="tab" data-sort="cpu">By CPU</button>
         </div>
 
         <ul id="process-list" class="process-list">
-          <li class="proc-loading">Click a card to see top consumers.</li>
+          <li class="proc-loading">Loading…</li>
         </ul>
       </div>
     </div>
