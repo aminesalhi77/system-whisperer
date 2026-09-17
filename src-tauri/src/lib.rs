@@ -1,14 +1,29 @@
+use once_cell::sync::Lazy;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use sysinfo::{Disks, System};
-use once_cell::sync::Lazy;
+use sysinfo::{Disks, Networks, System};
 
-// Global cached System + last refresh time
+// ---------- Global caches ----------
 static SYS: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new_all()));
 static LAST_REFRESH: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
+static ICON_CACHE: Lazy<Mutex<HashMap<String, Option<String>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static DESKTOP_INDEX: Lazy<Mutex<Option<HashMap<String, String>>>> =
+    Lazy::new(|| Mutex::new(None));
 
+// Network state — tracks delta between calls
+struct NetState {
+    networks: Networks,
+    last_refresh: Instant,
+    last_rx: u64,
+    last_tx: u64,
+}
+static NET: Lazy<Mutex<Option<NetState>>> = Lazy::new(|| Mutex::new(None));
+
+// ---------- Structs ----------
 #[derive(Serialize)]
 struct Snapshot {
     cpu_usage: f32,
@@ -18,6 +33,11 @@ struct Snapshot {
     disk_total_gb: f64,
     disk_used_gb: f64,
     disk_used_percent: f64,
+    // Network
+    net_down_mbps: f64,
+    net_up_mbps: f64,
+    net_connections: usize,
+    // Whisper
     whisper: String,
 }
 
@@ -38,12 +58,21 @@ struct DiskEntry {
     is_dir: bool,
 }
 
-// ---------- Refresh helper (throttled) ----------
+#[derive(Serialize)]
+struct NetInterface {
+    name: String,
+    down_mbps: f64,
+    up_mbps: f64,
+    total_rx_mb: f64,
+    total_tx_mb: f64,
+}
+
+// ---------- Refresh ----------
 fn refresh_system() {
     let mut last = LAST_REFRESH.lock().unwrap();
     let should_refresh = match *last {
         None => true,
-        Some(t) => t.elapsed() >= Duration::from_millis(900),
+        Some(t) => t.elapsed() >= Duration::from_millis(1500),
     };
     if should_refresh {
         if let Ok(mut sys) = SYS.lock() {
@@ -51,6 +80,69 @@ fn refresh_system() {
         }
         *last = Some(Instant::now());
     }
+}
+
+// ---------- Network helper ----------
+/// Returns (down_mbps, up_mbps, connections, per-interface list)
+fn sample_network() -> (f64, f64, usize, Vec<NetInterface>) {
+    let mut guard = NET.lock().unwrap();
+
+    // First call — initialize
+    if guard.is_none() {
+        let mut nets = Networks::new_with_refreshed_list();
+        nets.refresh(true);
+        let total_rx: u64 = nets.iter().map(|(_, d)| d.total_received()).sum();
+        let total_tx: u64 = nets.iter().map(|(_, d)| d.total_transmitted()).sum();
+        *guard = Some(NetState {
+            networks: nets,
+            last_refresh: Instant::now(),
+            last_rx: total_rx,
+            last_tx: total_tx,
+        });
+        return (0.0, 0.0, 0, vec![]);
+    }
+
+    let state = guard.as_mut().unwrap();
+    let elapsed = state.last_refresh.elapsed().as_secs_f64();
+    if elapsed < 0.1 {
+        return (0.0, 0.0, 0, vec![]);
+    }
+
+    state.networks.refresh(true);
+
+    let total_rx: u64 = state.networks.iter().map(|(_, d)| d.total_received()).sum();
+    let total_tx: u64 = state.networks.iter().map(|(_, d)| d.total_transmitted()).sum();
+
+    let rx_delta = total_rx.saturating_sub(state.last_rx);
+    let tx_delta = total_tx.saturating_sub(state.last_tx);
+
+    let down_mbps = (rx_delta as f64 / elapsed) / 1_048_576.0;
+    let up_mbps   = (tx_delta as f64 / elapsed) / 1_048_576.0;
+
+    let interfaces: Vec<NetInterface> = state
+        .networks
+        .iter()
+        .map(|(name, data)| NetInterface {
+            name: name.clone(),
+            down_mbps: (data.received() as f64) / 1_048_576.0,
+            up_mbps: (data.transmitted() as f64) / 1_048_576.0,
+            total_rx_mb: (data.total_received() as f64) / 1_048_576.0,
+            total_tx_mb: (data.total_transmitted() as f64) / 1_048_576.0,
+        })
+        .collect();
+
+    state.last_rx = total_rx;
+    state.last_tx = total_tx;
+    state.last_refresh = Instant::now();
+
+    // Count interfaces that are "up" as a proxy for connections
+    let connections = state
+        .networks
+        .iter()
+        .filter(|(_, d)| d.received() > 0 || d.transmitted() > 0)
+        .count();
+
+    (down_mbps, up_mbps, connections, interfaces)
 }
 
 // ---------- Snapshot ----------
@@ -61,7 +153,7 @@ async fn get_system_snapshot() -> Snapshot {
     let (cpu_usage, total_ram, used_ram) = {
         let sys = SYS.lock().unwrap();
         let total = sys.total_memory() as f64 / 1_073_741_824.0;
-        let used  = sys.used_memory()  as f64 / 1_073_741_824.0;
+        let used = sys.used_memory() as f64 / 1_073_741_824.0;
         (sys.global_cpu_usage(), total, used)
     };
 
@@ -81,14 +173,35 @@ async fn get_system_snapshot() -> Snapshot {
 
     let disk_used_percent = if disk_total > 0.0 { (disk_used / disk_total) * 100.0 } else { 0.0 };
 
-    let whisper = if ram_percent > 85.0 {
+    let (net_down, net_up, net_conns, _) = sample_network();
+
+    // ---------- Whisper logic ----------
+    let whisper = if net_down > 20.0 {
+        format!(
+            "Heavy download: {:.1} MB/s coming in. Something big is updating or streaming.",
+            net_down
+        )
+    } else if net_up > 10.0 {
+        format!(
+            "Heavy upload: {:.1} MB/s going out. Backing up or syncing?",
+            net_up
+        )
+    } else if ram_percent > 85.0 {
         format!("RAM is {:.0}% full ({:.1} / {:.1} GB). Click RAM to see the hog.", ram_percent, used_ram, total_ram)
     } else if disk_used_percent > 90.0 {
         format!("Disk is {:.0}% full ({:.0} / {:.0} GB). Click Disk to see what's big.", disk_used_percent, disk_used, disk_total)
     } else if cpu_usage > 70.0 {
         format!("CPU at {:.0}%. Something's working hard — click CPU to see what.", cpu_usage)
+    } else if net_down > 0.5 || net_up > 0.5 {
+        format!(
+            "Everything calm — light network activity ({:.1} ↓ / {:.1} ↑ MB/s).",
+            net_down, net_up
+        )
     } else {
-        format!("All healthy — CPU {:.0}%, RAM {:.0}%, Disk {:.0}%.", cpu_usage, ram_percent, disk_used_percent)
+        format!(
+            "All healthy — CPU {:.0}%, RAM {:.0}%, Disk {:.0}%.",
+            cpu_usage, ram_percent, disk_used_percent
+        )
     };
 
     Snapshot {
@@ -99,6 +212,9 @@ async fn get_system_snapshot() -> Snapshot {
         disk_total_gb: disk_total,
         disk_used_gb: disk_used,
         disk_used_percent,
+        net_down_mbps: net_down,
+        net_up_mbps: net_up,
+        net_connections: net_conns,
         whisper,
     }
 }
@@ -108,30 +224,60 @@ async fn get_system_snapshot() -> Snapshot {
 async fn get_top_processes(sort_by: String) -> Vec<ProcessInfo> {
     refresh_system();
 
-    let mut procs: Vec<ProcessInfo> = {
+    let mut raw: Vec<(u32, String, f64, f32)> = {
         let sys = SYS.lock().unwrap();
         sys.processes()
             .iter()
             .map(|(pid, p)| {
-                let name = p.name().to_string_lossy().to_string();
-                ProcessInfo {
-                    pid: pid.as_u32(),
-                    icon_path: find_icon_path(&name),
-                    name,
-                    ram_mb: p.memory() as f64 / 1_048_576.0,
-                    cpu_usage: p.cpu_usage(),
-                }
+                (
+                    pid.as_u32(),
+                    p.name().to_string_lossy().to_string(),
+                    p.memory() as f64 / 1_048_576.0,
+                    p.cpu_usage(),
+                )
             })
             .collect()
     };
 
     if sort_by == "cpu" {
-        procs.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
+        raw.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
     } else {
-        procs.sort_by(|a, b| b.ram_mb.partial_cmp(&a.ram_mb).unwrap_or(std::cmp::Ordering::Equal));
+        raw.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     }
 
-    procs.into_iter().take(8).collect()
+    raw.into_iter()
+        .take(8)
+        .map(|(pid, name, ram_mb, cpu_usage)| {
+            let icon_path = cached_icon_path(&name);
+            ProcessInfo { pid, name, ram_mb, cpu_usage, icon_path }
+        })
+        .collect()
+}
+
+// ---------- Network command ----------
+#[tauri::command]
+async fn get_network_interfaces() -> Vec<NetInterface> {
+    let (_, _, _, ifaces) = sample_network();
+    let mut list = ifaces;
+    list.sort_by(|a, b| {
+        let at = a.down_mbps + a.up_mbps;
+        let bt = b.down_mbps + b.up_mbps;
+        bt.partial_cmp(&at).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    list
+}
+
+// ---------- Icons ----------
+fn cached_icon_path(name: &str) -> Option<String> {
+    {
+        let cache = ICON_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(name) {
+            return cached.clone();
+        }
+    }
+    let result = find_icon_path(name);
+    ICON_CACHE.lock().unwrap().insert(name.to_string(), result.clone());
+    result
 }
 
 // ---------- Disk ----------
@@ -183,13 +329,10 @@ fn dir_size(path: &PathBuf, depth: u32) -> u64 {
     total
 }
 
-// ---------- Icons (Linux only) ----------
+// ---------- Desktop index (Linux icons) ----------
 #[cfg(target_os = "linux")]
-fn find_icon_path(process_name: &str) -> Option<String> {
-    let lower = process_name.to_lowercase();
-    let skip = ["bash", "sh", "zsh", "fish", "systemd", "kworker", "kthread", "init", "dbus"];
-    if skip.iter().any(|s| lower.starts_with(s)) { return None; }
-
+fn build_desktop_index() -> HashMap<String, String> {
+    let mut map = HashMap::new();
     let dirs = [
         "/usr/share/applications",
         "/usr/local/share/applications",
@@ -204,22 +347,55 @@ fn find_icon_path(process_name: &str) -> Option<String> {
             if path.extension().and_then(|e| e.to_str()) != Some("desktop") { continue; }
             let Ok(content) = std::fs::read_to_string(&path) else { continue };
 
-            let file_match = path.file_stem().and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase().contains(&lower)).unwrap_or(false);
+            let icon_name = content.lines()
+                .find(|l| l.starts_with("Icon="))
+                .map(|l| l.trim_start_matches("Icon=").trim().to_string());
+            let Some(icon_name) = icon_name else { continue };
+            if icon_name.is_empty() { continue; }
 
-            let exec_match = content.lines()
-                .find(|l| l.starts_with("Exec="))
-                .map(|l| l.to_lowercase().contains(&lower))
-                .unwrap_or(false);
+            let resolved = if icon_name.starts_with('/') {
+                Some(icon_name.clone())
+            } else {
+                resolve_icon_name(&icon_name)
+            };
+            let Some(real_path) = resolved else { continue };
 
-            if !file_match && !exec_match { continue; }
-
-            if let Some(icon_line) = content.lines().find(|l| l.starts_with("Icon=")) {
-                let icon_name = icon_line.trim_start_matches("Icon=").trim();
-                if icon_name.starts_with('/') { return Some(icon_name.to_string()); }
-                if let Some(found) = resolve_icon_name(icon_name) { return Some(found); }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                map.entry(stem.to_lowercase()).or_insert_with(|| real_path.clone());
+            }
+            if let Some(exec_line) = content.lines().find(|l| l.starts_with("Exec=")) {
+                let exec_val = exec_line.trim_start_matches("Exec=").trim();
+                let first = exec_val.split_whitespace().next().unwrap_or("");
+                if !first.is_empty() {
+                    let bin = std::path::Path::new(first)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(first)
+                        .to_lowercase();
+                    map.entry(bin).or_insert_with(|| real_path.clone());
+                }
             }
         }
+    }
+    map
+}
+
+#[cfg(target_os = "linux")]
+fn find_icon_path(process_name: &str) -> Option<String> {
+    let lower = process_name.to_lowercase();
+    let skip = ["bash", "sh", "zsh", "fish", "systemd", "kworker", "kthread", "init", "dbus", "sshd"];
+    if skip.iter().any(|s| lower.starts_with(s)) { return None; }
+
+    {
+        let mut idx = DESKTOP_INDEX.lock().unwrap();
+        if idx.is_none() { *idx = Some(build_desktop_index()); }
+    }
+    let idx = DESKTOP_INDEX.lock().unwrap();
+    let map = idx.as_ref().unwrap();
+
+    if let Some(p) = map.get(&lower) { return Some(p.clone()); }
+    for (key, path) in map.iter() {
+        if lower.contains(key) || key.contains(&lower) { return Some(path.clone()); }
     }
     None
 }
@@ -256,6 +432,7 @@ fn resolve_icon_name(icon_name: &str) -> Option<String> {
 #[cfg(not(target_os = "linux"))]
 fn find_icon_path(_process_name: &str) -> Option<String> { None }
 
+// ---------- Entry ----------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -263,7 +440,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_system_snapshot,
             get_top_processes,
-            get_disk_usage
+            get_disk_usage,
+            get_network_interfaces
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

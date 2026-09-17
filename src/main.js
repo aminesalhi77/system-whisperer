@@ -8,6 +8,7 @@ let modalRefreshTimer = null;
 let started = false;
 let isLoading = false;
 let refreshing = false;
+let hasLoaded = false;
 
 window.addEventListener("DOMContentLoaded", () => {
   const onboarding  = document.getElementById("onboarding");
@@ -26,7 +27,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function showDashboard(name) {
-    greeting.textContent = `Hello, ${name}`;
+    greeting.textContent = `Hello, ${name} 👋`;
     showOnly(dashboard);
     startRefreshLoop();
   }
@@ -93,6 +94,20 @@ window.addEventListener("DOMContentLoaded", () => {
       if (s.disk_used_percent > 90) { diskHint.textContent = "Critical"; diskHint.dataset.level = "high"; }
       else if (s.disk_used_percent > 75) { diskHint.textContent = "Getting tight"; diskHint.dataset.level = "mid"; }
       else { diskHint.textContent = "Comfortable"; diskHint.dataset.level = "low"; }
+
+      // Network
+      const down = s.net_down_mbps || 0;
+      const up = s.net_up_mbps || 0;
+      const netTotal = down + up;
+      document.getElementById("net").textContent =
+        `↓ ${down.toFixed(1)} · ↑ ${up.toFixed(1)} MB/s`;
+      document.getElementById("net-bar").style.width =
+        `${Math.min(netTotal / 50 * 100, 100)}%`;
+
+      const netHint = document.getElementById("net-hint");
+      if (netTotal > 20) { netHint.textContent = "Heavy traffic"; netHint.dataset.level = "high"; }
+      else if (netTotal > 5) { netHint.textContent = "Active"; netHint.dataset.level = "mid"; }
+      else { netHint.textContent = "Idle"; netHint.dataset.level = "low"; }
     } catch (err) {
       console.error("Snapshot error:", err);
     } finally {
@@ -104,6 +119,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("cpu-card").addEventListener("click", () => openModal("cpu"));
   document.getElementById("ram-card").addEventListener("click", () => openModal("ram"));
   document.getElementById("disk-card").addEventListener("click", () => openModal("disk"));
+  document.getElementById("net-card").addEventListener("click", () => openModal("net"));
 
   document.getElementById("modal-close").addEventListener("click", closeModal);
   modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
@@ -113,13 +129,22 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function openModal(view) {
     currentView = view;
-    hasLoaded = false;   // ← add this
+    hasLoaded = false;
     clearInterval(modalRefreshTimer);
 
     if (view === "disk") {
       modalKicker.textContent = "Disk usage";
       modalTitle.textContent = "Biggest items in your home";
       loadDiskUsage();
+    } else if (view === "net") {
+      modalKicker.textContent = "Network activity";
+      modalTitle.textContent = "Live interfaces";
+      loadNetwork();
+      modalRefreshTimer = setInterval(() => {
+        if (!modal.classList.contains("hidden") && currentView === "net") {
+          loadNetwork();
+        }
+      }, 3000);
     } else if (view === "cpu") {
       modalKicker.textContent = "CPU consumers";
       modalTitle.textContent = "Top 8 by CPU";
@@ -150,28 +175,23 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   // ---------- PROCESSES ----------
-  let hasLoaded = false;
-
-async function loadProcesses(sortBy) {
-  if (isLoading) return;
-  isLoading = true;
-
-  // Only show "Scanning…" on the very first load
-  if (!hasLoaded) {
-    processList.innerHTML = `<li class="proc-loading">Scanning processes…</li>`;
+  async function loadProcesses(sortBy) {
+    if (isLoading) return;
+    isLoading = true;
+    if (!hasLoaded) {
+      processList.innerHTML = `<li class="proc-loading">Scanning processes…</li>`;
+    }
+    try {
+      const procs = await invoke("get_top_processes", { sortBy });
+      renderProcesses(procs, sortBy);
+      hasLoaded = true;
+    } catch (err) {
+      console.error(err);
+      processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
+    } finally {
+      isLoading = false;
+    }
   }
-
-  try {
-    const procs = await invoke("get_top_processes", { sortBy });
-    renderProcesses(procs, sortBy);
-    hasLoaded = true;
-  } catch (err) {
-    console.error(err);
-    processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
-  } finally {
-    isLoading = false;
-  }
-}
 
   function renderProcesses(procs, sortBy) {
     if (!procs || !procs.length) {
@@ -248,6 +268,52 @@ async function loadProcesses(sortBy) {
             </div>
             <div class="proc-metric">
               <span class="proc-value">${size}</span>
+              <div class="proc-bar"><div class="proc-bar-fill" style="width:${barPct}%"></div></div>
+            </div>
+          </li>
+        `;
+      })
+      .join("");
+  }
+
+  // ---------- NETWORK ----------
+  async function loadNetwork() {
+    processList.innerHTML = `<li class="proc-loading">Sampling network…</li>`;
+    try {
+      const ifaces = await invoke("get_network_interfaces");
+      renderNetwork(ifaces);
+    } catch (err) {
+      console.error(err);
+      processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
+    }
+  }
+
+  function renderNetwork(ifaces) {
+    if (!ifaces || !ifaces.length) {
+      processList.innerHTML = `<li class="proc-loading">No active interfaces.</li>`;
+      return;
+    }
+
+    const maxTotal = Math.max(...ifaces.map(i => i.down_mbps + i.up_mbps), 0.001);
+
+    processList.innerHTML = ifaces
+      .map((iface, i) => {
+        const total = iface.down_mbps + iface.up_mbps;
+        const barPct = Math.min((total / maxTotal) * 100, 100);
+        const label = total > 1
+          ? `${total.toFixed(1)} MB/s`
+          : `${(total * 1024).toFixed(0)} KB/s`;
+
+        return `
+          <li class="proc-row">
+            <span class="proc-rank">${i + 1}</span>
+            <div class="proc-fallback" style="background:rgba(34,211,238,0.15)">🌐</div>
+            <div class="proc-info">
+              <div class="proc-name">${escapeHtml(iface.name)}</div>
+              <div class="proc-meta">↓ ${iface.down_mbps.toFixed(2)} · ↑ ${iface.up_mbps.toFixed(2)} MB/s</div>
+            </div>
+            <div class="proc-metric">
+              <span class="proc-value">${label}</span>
               <div class="proc-bar"><div class="proc-bar-fill" style="width:${barPct}%"></div></div>
             </div>
           </li>
