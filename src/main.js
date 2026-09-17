@@ -3,7 +3,6 @@ const { convertFileSrc } = window.__TAURI__.core;
 
 const NAME_KEY = "sw_user_name";
 
-let currentSort = "ram";
 let currentView = "ram";
 let modalRefreshTimer = null;
 let started = false;
@@ -19,7 +18,6 @@ window.addEventListener("DOMContentLoaded", () => {
   const modal       = document.getElementById("modal");
   const modalTitle  = document.getElementById("modal-title");
   const modalKicker = document.getElementById("modal-kicker");
-  const modalTabs   = document.getElementById("modal-tabs");
   const processList = document.getElementById("process-list");
 
   // ---------- SCREENS ----------
@@ -113,39 +111,33 @@ window.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
   });
 
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      currentSort = tab.dataset.sort;
-      loadProcesses(currentSort);
-    });
-  });
-
   function openModal(view) {
     currentView = view;
+    hasLoaded = false;   // ← add this
     clearInterval(modalRefreshTimer);
 
     if (view === "disk") {
       modalKicker.textContent = "Disk usage";
       modalTitle.textContent = "Biggest items in your home";
-      modalTabs.classList.add("hidden");
       loadDiskUsage();
-    } else {
-      currentSort = view;
-      modalKicker.textContent = view === "cpu" ? "CPU hogs" : "Memory hogs";
-      modalTitle.textContent = "Top 8 consumers";
-      modalTabs.classList.remove("hidden");
-      document.querySelectorAll(".tab").forEach((t) => {
-        t.classList.toggle("active", t.dataset.sort === view);
-      });
-      loadProcesses(view);
-
+    } else if (view === "cpu") {
+      modalKicker.textContent = "CPU consumers";
+      modalTitle.textContent = "Top 8 by CPU";
+      loadProcesses("cpu");
       modalRefreshTimer = setInterval(() => {
-        if (!modal.classList.contains("hidden") && currentView !== "disk" && !isLoading) {
-          loadProcesses(currentSort);
+        if (!modal.classList.contains("hidden") && currentView === "cpu" && !isLoading) {
+          loadProcesses("cpu");
         }
-      }, 5000);
+      }, 6000);
+    } else {
+      modalKicker.textContent = "Memory consumers";
+      modalTitle.textContent = "Top 8 by memory";
+      loadProcesses("ram");
+      modalRefreshTimer = setInterval(() => {
+        if (!modal.classList.contains("hidden") && currentView === "ram" && !isLoading) {
+          loadProcesses("ram");
+        }
+      }, 6000);
     }
 
     modal.classList.remove("hidden");
@@ -158,20 +150,28 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   // ---------- PROCESSES ----------
-  async function loadProcesses(sortBy) {
-    if (isLoading) return;
-    isLoading = true;
+  let hasLoaded = false;
+
+async function loadProcesses(sortBy) {
+  if (isLoading) return;
+  isLoading = true;
+
+  // Only show "Scanning…" on the very first load
+  if (!hasLoaded) {
     processList.innerHTML = `<li class="proc-loading">Scanning processes…</li>`;
-    try {
-      const procs = await invoke("get_top_processes", { sortBy });
-      renderProcesses(procs, sortBy);
-    } catch (err) {
-      console.error(err);
-      processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
-    } finally {
-      isLoading = false;
-    }
   }
+
+  try {
+    const procs = await invoke("get_top_processes", { sortBy });
+    renderProcesses(procs, sortBy);
+    hasLoaded = true;
+  } catch (err) {
+    console.error(err);
+    processList.innerHTML = `<li class="proc-loading">Error: ${escapeHtml(String(err))}</li>`;
+  } finally {
+    isLoading = false;
+  }
+}
 
   function renderProcesses(procs, sortBy) {
     if (!procs || !procs.length) {
@@ -268,7 +268,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!iconPath) return fallback;
 
     const src = convertFileSrc(iconPath);
-    // Escape the fallback HTML so it can safely live inside an onerror attribute
     const esc = fallback.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     return `<img class="proc-icon" src="${src}" alt="" onerror="this.outerHTML='${esc}'" />`;
   }

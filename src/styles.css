@@ -197,8 +197,14 @@ body {
 
 .stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 .card {
@@ -349,36 +355,7 @@ body {
 
 .modal-close:hover { background: rgba(255, 255, 255, 0.12); }
 
-.tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 0.3rem;
-  border-radius: 10px;
-}
-
-.tab {
-  flex: 1;
-  padding: 0.5rem;
-  background: transparent;
-  border: none;
-  color: var(--text-mute);
-  font-size: 0.85rem;
-  font-weight: 600;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.15s;
-  font-family: inherit;
-}
-
-.tab:hover { color: var(--text-dim); }
-
-.tab.active {
-  background: rgba(34, 211, 238, 0.15);
-  color: var(--cyan);
-}
-
+/* ===== PROCESS LIST ===== */
 .process-list {
   list-style: none;
   display: flex;
@@ -403,7 +380,6 @@ body {
   border: 1px solid transparent;
   border-radius: 12px;
   transition: background 0.15s, border-color 0.15s;
-  animation: fadeIn 0.3s ease;
 }
 
 .proc-row:hover {
@@ -439,6 +415,11 @@ body {
   font-size: 0.9rem;
 }
 
+.proc-fallback.proc-folder {
+  background: rgba(251, 191, 36, 0.15);
+  font-size: 1rem;
+}
+
 .proc-info {
   min-width: 0;
   overflow: hidden;
@@ -457,6 +438,9 @@ body {
   font-size: 0.72rem;
   color: var(--text-mute);
   margin-top: 0.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .proc-metric {
@@ -486,21 +470,4 @@ body {
   background: linear-gradient(90deg, var(--cyan), var(--purple));
   border-radius: 3px;
   transition: width 0.4s ease;
-}
-.stats {
-  grid-template-columns: repeat(3, 1fr);
-}
-
-@media (max-width: 640px) {
-  .stats {
-    grid-template-columns: 1fr;
-  }
-}
-/* Hide tabs when showing disk view */
-.tabs.hidden { display: none; }
-
-/* Folder icon styling */
-.proc-fallback.proc-folder {
-  background: rgba(251, 191, 36, 0.15);
-  font-size: 1rem;
 }
