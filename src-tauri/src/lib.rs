@@ -84,6 +84,7 @@ fn refresh_system() {
 
 // ---------- Network helper ----------
 /// Returns (down_mbps, up_mbps, connections, per-interface list)
+/// Returns (down_mbps, up_mbps, connections, per-interface list)
 fn sample_network() -> (f64, f64, usize, Vec<NetInterface>) {
     let mut guard = NET.lock().unwrap();
 
@@ -103,39 +104,54 @@ fn sample_network() -> (f64, f64, usize, Vec<NetInterface>) {
     }
 
     let state = guard.as_mut().unwrap();
-    let elapsed = state.last_refresh.elapsed().as_secs_f64();
-    if elapsed < 0.1 {
-        return (0.0, 0.0, 0, vec![]);
-    }
 
+    // Always refresh the underlying counters first
     state.networks.refresh(true);
+
+    let now = Instant::now();
+    let elapsed = now.duration_since(state.last_refresh).as_secs_f64();
 
     let total_rx: u64 = state.networks.iter().map(|(_, d)| d.total_received()).sum();
     let total_tx: u64 = state.networks.iter().map(|(_, d)| d.total_transmitted()).sum();
 
-    let rx_delta = total_rx.saturating_sub(state.last_rx);
-    let tx_delta = total_tx.saturating_sub(state.last_tx);
-
-    let down_mbps = (rx_delta as f64 / elapsed) / 1_048_576.0;
-    let up_mbps   = (tx_delta as f64 / elapsed) / 1_048_576.0;
-
+    // Per-interface live rates (each interface has its own delta)
     let interfaces: Vec<NetInterface> = state
         .networks
         .iter()
-        .map(|(name, data)| NetInterface {
-            name: name.clone(),
-            down_mbps: (data.received() as f64) / 1_048_576.0,
-            up_mbps: (data.transmitted() as f64) / 1_048_576.0,
-            total_rx_mb: (data.total_received() as f64) / 1_048_576.0,
-            total_tx_mb: (data.total_transmitted() as f64) / 1_048_576.0,
+        .map(|(name, data)| {
+            let recv = data.received() as f64 / 1_048_576.0;   // MB since last refresh
+            let sent = data.transmitted() as f64 / 1_048_576.0;
+            let factor = if elapsed > 0.1 { 1.0 / elapsed } else { 0.0 };
+            NetInterface {
+                name: name.clone(),
+                down_mbps: recv * factor,
+                up_mbps: sent * factor,
+                total_rx_mb: (data.total_received() as f64) / 1_048_576.0,
+                total_tx_mb: (data.total_transmitted() as f64) / 1_048_576.0,
+            }
         })
         .collect();
 
-    state.last_rx = total_rx;
-    state.last_tx = total_tx;
-    state.last_refresh = Instant::now();
+    // Only update the baseline if at least 500ms passed
+    // so rapid calls don't reset the delta to near-zero
+    let (down_mbps, up_mbps) = if elapsed >= 0.5 {
+        let rx_delta = total_rx.saturating_sub(state.last_rx) as f64 / 1_048_576.0;
+        let tx_delta = total_tx.saturating_sub(state.last_tx) as f64 / 1_048_576.0;
+        let down = rx_delta / elapsed;
+        let up = tx_delta / elapsed;
+        state.last_rx = total_rx;
+        state.last_tx = total_tx;
+        state.last_refresh = now;
+        (down, up)
+    } else {
+        // Too soon — report last known rate (approximate by reusing last delta)
+        // Compute based on last known state without updating baseline
+        let rx_delta = total_rx.saturating_sub(state.last_rx) as f64 / 1_048_576.0;
+        let tx_delta = total_tx.saturating_sub(state.last_tx) as f64 / 1_048_576.0;
+        let since = now.duration_since(state.last_refresh).as_secs_f64().max(0.1);
+        (rx_delta / since, tx_delta / since)
+    };
 
-    // Count interfaces that are "up" as a proxy for connections
     let connections = state
         .networks
         .iter()

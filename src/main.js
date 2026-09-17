@@ -104,10 +104,11 @@ window.addEventListener("DOMContentLoaded", () => {
       document.getElementById("net-bar").style.width =
         `${Math.min(netTotal / 50 * 100, 100)}%`;
 
-      const netHint = document.getElementById("net-hint");
-      if (netTotal > 20) { netHint.textContent = "Heavy traffic"; netHint.dataset.level = "high"; }
-      else if (netTotal > 5) { netHint.textContent = "Active"; netHint.dataset.level = "mid"; }
-      else { netHint.textContent = "Idle"; netHint.dataset.level = "low"; }
+        const netHint = document.getElementById("net-hint");
+        if (netTotal > 20) { netHint.textContent = "Heavy traffic"; netHint.dataset.level = "high"; }
+        else if (netTotal > 5) { netHint.textContent = "Streaming / downloading"; netHint.dataset.level = "mid"; }
+        else if (netTotal > 0.5) { netHint.textContent = "Light activity"; netHint.dataset.level = "mid"; }
+        else { netHint.textContent = "Idle"; netHint.dataset.level = "low"; }
     } catch (err) {
       console.error("Snapshot error:", err);
     } finally {
@@ -293,33 +294,62 @@ window.addEventListener("DOMContentLoaded", () => {
       processList.innerHTML = `<li class="proc-loading">No active interfaces.</li>`;
       return;
     }
-
-    const maxTotal = Math.max(...ifaces.map(i => i.down_mbps + i.up_mbps), 0.001);
-
-    processList.innerHTML = ifaces
-      .map((iface, i) => {
-        const total = iface.down_mbps + iface.up_mbps;
-        const barPct = Math.min((total / maxTotal) * 100, 100);
-        const label = total > 1
-          ? `${total.toFixed(1)} MB/s`
-          : `${(total * 1024).toFixed(0)} KB/s`;
-
+  
+    // Global totals across all interfaces
+    const totalDown = ifaces.reduce((sum, i) => sum + i.down_mbps, 0);
+    const totalUp   = ifaces.reduce((sum, i) => sum + i.up_mbps, 0);
+    const total     = totalDown + totalUp;
+  
+    // Filter out loopback for the "real" interfaces list
+    const realIfaces = ifaces.filter(i => i.name !== "lo" && i.name !== "lo0");
+    const loopback = ifaces.filter(i => i.name === "lo" || i.name === "lo0");
+  
+    const fmtSpeed = (mbps) => {
+      if (mbps >= 1) return `${mbps.toFixed(2)} MB/s`;
+      if (mbps >= 0.001) return `${(mbps * 1024).toFixed(0)} KB/s`;
+      return `${(mbps * 1024 * 1024).toFixed(0)} B/s`;
+    };
+  
+    const heroHtml = `
+      <li class="net-hero">
+        <p class="net-hero-label">Total throughput</p>
+        <p class="net-hero-value">${fmtSpeed(total)}</p>
+        <div class="net-tiles">
+          <div class="net-tile">
+            <span class="net-tile-arrow down">↓</span>
+            <span class="net-tile-label">Download</span>
+            <span class="net-tile-value">${fmtSpeed(totalDown)}</span>
+          </div>
+          <div class="net-tile">
+            <span class="net-tile-arrow up">↑</span>
+            <span class="net-tile-label">Upload</span>
+            <span class="net-tile-value">${fmtSpeed(totalUp)}</span>
+          </div>
+        </div>
+      </li>
+    `;
+  
+    const ifaceRows = [...realIfaces, ...loopback]
+      .map((iface) => {
+        const ifTotal = iface.down_mbps + iface.up_mbps;
+        const isLoopback = iface.name === "lo" || iface.name === "lo0";
         return `
-          <li class="proc-row">
-            <span class="proc-rank">${i + 1}</span>
-            <div class="proc-fallback" style="background:rgba(34,211,238,0.15)">🌐</div>
-            <div class="proc-info">
-              <div class="proc-name">${escapeHtml(iface.name)}</div>
-              <div class="proc-meta">↓ ${iface.down_mbps.toFixed(2)} · ↑ ${iface.up_mbps.toFixed(2)} MB/s</div>
+          <li class="net-iface-row">
+            <div class="net-iface-icon">${isLoopback ? "🔄" : "📶"}</div>
+            <div class="net-iface-info">
+              <div class="net-iface-name">${escapeHtml(iface.name)}</div>
+              <div class="net-iface-tag">${isLoopback ? "Internal" : "Wireless / Ethernet"}</div>
             </div>
-            <div class="proc-metric">
-              <span class="proc-value">${label}</span>
-              <div class="proc-bar"><div class="proc-bar-fill" style="width:${barPct}%"></div></div>
+            <div class="net-iface-speed">
+              <span class="down">↓ ${fmtSpeed(iface.down_mbps)}</span>
+              <span class="up">↑ ${fmtSpeed(iface.up_mbps)}</span>
             </div>
           </li>
         `;
       })
       .join("");
+  
+    processList.innerHTML = heroHtml + ifaceRows;
   }
 
   // ---------- ICON HELPER ----------

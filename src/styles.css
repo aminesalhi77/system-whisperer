@@ -471,3 +471,144 @@ body {
   border-radius: 3px;
   transition: width 0.4s ease;
 }
+/* ===== NETWORK MODAL ===== */
+.net-hero {
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.12), rgba(167, 139, 250, 0.08));
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  border-radius: 16px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.net-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top right, rgba(34, 211, 238, 0.15), transparent 60%);
+  pointer-events: none;
+}
+
+.net-hero-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-mute);
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.net-hero-value {
+  font-size: 2.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.net-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.net-tile {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+}
+
+.net-tile-arrow {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.net-tile-arrow.down { color: var(--cyan); }
+.net-tile-arrow.up   { color: var(--purple); }
+
+.net-tile-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-mute);
+  font-weight: 600;
+}
+
+.net-tile-value {
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  margin-top: 0.15rem;
+}
+
+/* Per-interface compact rows */
+.net-iface-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+.net-iface-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.net-iface-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.net-iface-info {
+  min-width: 0;
+}
+
+.net-iface-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.net-iface-tag {
+  font-size: 0.68rem;
+  color: var(--text-mute);
+  margin-top: 0.1rem;
+}
+
+.net-iface-speed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.net-iface-speed .down { color: var(--cyan); }
+.net-iface-speed .up   { color: var(--purple); }
