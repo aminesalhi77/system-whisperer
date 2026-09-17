@@ -26,7 +26,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function showDashboard(name) {
-    greeting.textContent = `Hello, ${name} 👋`;
+    greeting.textContent = `Hello, ${name}`;
     showOnly(dashboard);
     startRefreshLoop();
   }
